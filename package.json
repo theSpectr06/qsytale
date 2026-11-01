@@ -1,0 +1,20 @@
+{
+  "name": "qsytale",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@noble/post-quantum": "^0.7.1",
+    "node-forge": "^1.4.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

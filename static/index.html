@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qsytale</title>
+</head>
+<body>
+    <h1>Qsytale</h1>
+    <p>Post-quantum secure file sharing.</p>
+    <p id="status">Connecting...</p>
+
+    <script>
+        fetch("/api/health")
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById("status").textContent =
+                    `Server: ${data.status}`;
+            })
+            .catch(() => {
+                document.getElementById("status").textContent =
+                    "Connection failed";
+            });
+    </script>
+</body>
+</html>

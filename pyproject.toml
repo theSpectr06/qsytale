@@ -1,0 +1,12 @@
+[project]
+name = "qsytale"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.162.0",
+    "numpy>=2.5.4",
+    "python-multipart>=0.0.33",
+    "qiskit>=2.6.1",
+    "qiskit-aer>=0.18.2",
+    "uvicorn[standard]>=0.54.0",
+]
