@@ -1,10 +1,10 @@
 import {
     unlockDevice,
-    uploadFileClassical,
+    uploadFile,
     listVault,
     downloadFile,
     MAX_FILE_SIZE,
-} from './crypto.bundle.js?v=stage1';
+} from './crypto.bundle.js?v=stage2';
 
 const $ = (id) => document.getElementById(id);
 const log = $('log');
@@ -46,34 +46,47 @@ function renderFiles() {
 
     if (items.length === 0) {
         const li = document.createElement('li');
-        li.textContent = 'No files yet.';
+        li.className = 'empty';
+        li.textContent = 'No files yet. Encrypt one above to get started.';
         list.appendChild(li);
         return;
     }
 
     for (const item of items) {
         const li = document.createElement('li');
+        li.className = 'file';
+
+        const body = document.createElement('div');
+        body.className = 'file-body';
 
         const title = document.createElement('div');
+        title.className = 'file-name';
         title.textContent = item.error ? '(unreadable file)' : item.name;
-        li.appendChild(title);
-
-        const badge = document.createElement('span');
-        badge.className = 'badge';
-        badge.textContent = item.mode;
-        li.appendChild(badge);
+        body.appendChild(title);
 
         const meta = document.createElement('div');
         meta.className = 'meta';
-        meta.textContent = item.error
-            ? item.error
-            : `${formatSize(item.size)} | from ${item.uploader.slice(0, 8)} | ${item.created.slice(0, 19)}`;
+
+        const chip = document.createElement('span');
+        chip.className = item.mode === 'post-quantum' ? 'chip pq' : 'chip';
+        chip.textContent = item.mode === 'post-quantum' ? 'Post-quantum' : 'Classical';
+        meta.appendChild(chip);
+
+        const detail = document.createTextNode(
+            item.error
+                ? item.error
+                : `${formatSize(item.size)} | from ${item.uploader.slice(0, 8)} | ${item.created.slice(0, 19)}`
+        );
+        meta.appendChild(detail);
         if (item.error) meta.classList.add('error');
-        li.appendChild(meta);
+        body.appendChild(meta);
+        li.appendChild(body);
 
         if (!item.error) {
             const button = document.createElement('button');
-            button.textContent = 'Download and decrypt';
+            button.className = 'tonal small';
+            button.textContent = 'Download';
+            button.setAttribute('aria-label', `Download and decrypt ${item.name}`);
             button.addEventListener('click', () => handleDownload(item));
             li.appendChild(button);
         }
@@ -84,7 +97,7 @@ function renderFiles() {
 
 async function refresh() {
     say('Loading file list and unwrapping keys...');
-    items = await listVault(ctx, keys.rsaPrivate);
+    items = await listVault(ctx, keys.rsaPrivate, keys.mlkemSecret, deviceId);
     renderFiles();
     say(`${items.length} file(s) in the vault.`);
 }
@@ -136,10 +149,11 @@ $('upload').addEventListener('click', async () => {
         const start = performance.now();
 
         const bytes = new Uint8Array(await file.arrayBuffer());
-        const result = await uploadFileClassical(ctx, {
+        const result = await uploadFile(ctx, {
             bytes,
             name: file.name,
             type: file.type,
+            mode: document.querySelector('input[name="mode"]:checked').value,
         });
 
         const ms = (performance.now() - start).toFixed(0);
@@ -148,7 +162,7 @@ $('upload').addEventListener('click', async () => {
 
         say(
             `UPLOAD OK: ${file.name}\n` +
-            `Encrypted, wrapped for ${result.wrappedFor} device(s), ` +
+            `Mode: ${result.mode}. Encrypted, wrapped for ${result.wrappedFor} device(s), ` +
             `stored ${result.storedBytes} bytes in ${ms} ms\n` +
             `SHA-256 of original file:\n${result.plaintextSha256}`
         );

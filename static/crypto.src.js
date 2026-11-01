@@ -3,6 +3,7 @@ import { ml_kem768 } from '@noble/post-quantum/ml-kem.js';
 import { gcm } from '@noble/ciphers/aes.js';
 import { scryptAsync } from '@noble/hashes/scrypt.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { hkdf } from '@noble/hashes/hkdf.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 const encoder = new TextEncoder();
@@ -260,9 +261,69 @@ function unwrapFekRSA(rsaPrivateKey, wrap) {
     return fek;
 }
 
+// ==================================================
+// FILE VAULT: POST-QUANTUM MODE (added after classical, same blob format)
+//   file   : identical to classical (AES-256-GCM under a random FEK)
+//   FEK    : per device, (kem_ct, ss) = ML-KEM-768.Encaps(device pk)
+//            k = HKDF-SHA-256(ss, info = file id + device id)
+//            wrapped = AES-256-GCM(k, wnonce, FEK, aad = file id + device id)
+// ==================================================
+
+const MODE_PQ = 'post-quantum';
+const PQ_WRAP_ALG = 'ML-KEM-768+HKDF-SHA256+AES-256-GCM';
+
+const pqInfo = (fileId, deviceId) =>
+    encoder.encode(`qsytale/v1/mlkem-wrap/${fileId}/${deviceId}`);
+const pqWrapAad = (fileId, deviceId) =>
+    encoder.encode(`qsytale/v1/mlkem-wrap-aad/${fileId}/${deviceId}`);
+
+function wrapFekMLKEM(mlkemPublicB64, fek, fileId, deviceId) {
+    const { cipherText, sharedSecret } = ml_kem768.encapsulate(
+        fromBase64(mlkemPublicB64)
+    );
+    const k = hkdf(sha256, sharedSecret, undefined, pqInfo(fileId, deviceId), 32);
+    const wnonce = randomBytes(12);
+    const wrapped = gcm(k, wnonce, pqWrapAad(fileId, deviceId)).encrypt(fek);
+
+    k.fill(0);
+    sharedSecret.fill(0);
+
+    return {
+        alg: PQ_WRAP_ALG,
+        kem_ct: toBase64(cipherText),
+        wnonce: toBase64(wnonce),
+        wrapped: toBase64(wrapped),
+    };
+}
+
+function unwrapFekMLKEM(mlkemSecret, wrap, fileId, deviceId) {
+    const sharedSecret = ml_kem768.decapsulate(
+        fromBase64(wrap.kem_ct),
+        mlkemSecret
+    );
+    const k = hkdf(sha256, sharedSecret, undefined, pqInfo(fileId, deviceId), 32);
+    const fek = gcm(
+        k,
+        fromBase64(wrap.wnonce),
+        pqWrapAad(fileId, deviceId)
+    ).decrypt(fromBase64(wrap.wrapped));
+
+    k.fill(0);
+    sharedSecret.fill(0);
+
+    if (fek.length !== 32) throw new Error('Unwrapped key has wrong length.');
+
+    return fek;
+}
+
 // Pure function: no network, no storage.
-// devices = [{ id, rsa_pk }] for EVERY enrolled device (server requires it).
-export function encryptFileClassical({ bytes, name, type, devices }) {
+// devices = [{ id, rsa_pk, mlkem_pk }] for EVERY enrolled device (server requires it).
+// mode = 'classical' (default) or 'post-quantum'.
+export function encryptFile({ bytes, name, type, devices, mode = MODE_CLASSICAL }) {
+    if (mode !== MODE_CLASSICAL && mode !== MODE_PQ) {
+        throw new Error(`Unknown encryption mode: ${mode}`);
+    }
+
     if (bytes.length > MAX_FILE_SIZE) {
         throw new Error('File exceeds the 20 MiB limit.');
     }
@@ -281,7 +342,9 @@ export function encryptFileClassical({ bytes, name, type, devices }) {
 
     const wraps = devices.map((device) => ({
         device_id: device.id,
-        wrap_json: wrapFekRSA(device.rsa_pk, fek),
+        wrap_json: mode === MODE_PQ
+            ? wrapFekMLKEM(device.mlkem_pk, fek, fileId, device.id)
+            : wrapFekRSA(device.rsa_pk, fek),
     }));
 
     fek.fill(0);
@@ -291,7 +354,7 @@ export function encryptFileClassical({ bytes, name, type, devices }) {
         blob,
         metadata: {
             file_id: fileId,
-            mode: MODE_CLASSICAL,
+            mode,
             nonce: toBase64(nonce),
             meta_nonce: toBase64(metaNonce),
             meta_ct: toBase64(metaCt),
@@ -301,9 +364,26 @@ export function encryptFileClassical({ bytes, name, type, devices }) {
     };
 }
 
+// Unchanged public name and behaviour for classical callers.
+export function encryptFileClassical(args) {
+    return encryptFile({ ...args, mode: MODE_CLASSICAL });
+}
+
 // Pure function: returns { fek, name, type, size } for a file entry.
-export function openFileMetadata({ rsaPrivate, entry, wrap }) {
-    const fek = unwrapFekRSA(rsaPrivate, wrap);
+// Dispatches on the wrap algorithm, so old classical files keep working.
+export function openFileMetadata({ rsaPrivate, mlkemSecret, deviceId, entry, wrap }) {
+    let fek;
+
+    if (wrap.alg === RSA_WRAP_ALG) {
+        fek = unwrapFekRSA(rsaPrivate, wrap);
+    } else if (wrap.alg === PQ_WRAP_ALG) {
+        if (!mlkemSecret || !deviceId) {
+            throw new Error('ML-KEM secret key and device id are required.');
+        }
+        fek = unwrapFekMLKEM(mlkemSecret, wrap, entry.id, deviceId);
+    } else {
+        throw new Error(`Unsupported wrap algorithm: ${wrap.alg}`);
+    }
 
     const plain = gcm(
         fek,
@@ -355,10 +435,10 @@ async function api(ctx, path, options = {}) {
     return response;
 }
 
-export async function uploadFileClassical(ctx, { bytes, name, type }) {
+export async function uploadFile(ctx, { bytes, name, type, mode = MODE_CLASSICAL }) {
     const devices = await (await api(ctx, '/api/devices')).json();
 
-    const sealed = encryptFileClassical({ bytes, name, type, devices });
+    const sealed = encryptFile({ bytes, name, type, devices, mode });
 
     const form = new FormData();
     form.append(
@@ -375,15 +455,20 @@ export async function uploadFileClassical(ctx, { bytes, name, type }) {
 
     return {
         id: result.id,
+        mode,
         storedBytes: result.stored_bytes,
         wrappedFor: result.wrapped_for,
         plaintextSha256: sha256Hex(bytes),
     };
 }
 
+export function uploadFileClassical(ctx, args) {
+    return uploadFile(ctx, { ...args, mode: MODE_CLASSICAL });
+}
+
 // Lists files and decrypts each name for this device.
 // Entries keep their FEK in memory only, for downloadFile().
-export async function listVault(ctx, rsaPrivate) {
+export async function listVault(ctx, rsaPrivate, mlkemSecret = null, deviceId = null) {
     const entries = await (await api(ctx, '/api/files')).json();
     const result = [];
 
@@ -397,15 +482,17 @@ export async function listVault(ctx, rsaPrivate) {
         };
 
         try {
-            if (entry.mode !== MODE_CLASSICAL) {
-                throw new Error(`mode "${entry.mode}" not supported yet`);
+            if (entry.mode !== MODE_CLASSICAL && entry.mode !== MODE_PQ) {
+                throw new Error(`mode "${entry.mode}" not supported`);
             }
 
             const { wrap } = await (
                 await api(ctx, `/api/files/${entry.id}/wrap`)
             ).json();
 
-            const opened = openFileMetadata({ rsaPrivate, entry, wrap });
+            const opened = openFileMetadata({
+                rsaPrivate, mlkemSecret, deviceId, entry, wrap,
+            });
 
             item.fek = opened.fek;
             item.name = opened.name;
@@ -439,5 +526,109 @@ export async function downloadFile(ctx, item) {
         name: item.name,
         type: item.type,
         sha256: sha256Hex(bytes),
+    };
+}
+
+// ==================================================
+// BENCHMARK: RSA-2048 vs ML-KEM-768, measured on THIS device
+// Times the same wrap/unwrap code paths the vault uses. Nothing is hardcoded:
+// every size and timing below is measured from real keys and real wraps.
+// ==================================================
+
+function median(values) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function timeIt(runs, fn) {
+    const samples = [];
+    for (let i = 0; i < runs; i++) {
+        const start = performance.now();
+        fn();
+        samples.push(performance.now() - start);
+    }
+    return median(samples);
+}
+
+const utf8Length = (text) => encoder.encode(text).length;
+
+// iterations: runs for the fast operations (wrap, unwrap, ML-KEM keygen).
+// rsaKeygenRuns: RSA-2048 keygen is slow (seconds on a phone), so fewer runs.
+export async function runBenchmark({ iterations = 20, rsaKeygenRuns = 5, onProgress = () => {} } = {}) {
+    // ---- RSA keygen (async, same call the app uses at enrolment) ----
+    const rsaKeygenSamples = [];
+    let rsa;
+    for (let i = 0; i < rsaKeygenRuns; i++) {
+        onProgress(`RSA-2048 keygen ${i + 1}/${rsaKeygenRuns}...`);
+        const start = performance.now();
+        rsa = await generateRSAKeys();
+        rsaKeygenSamples.push(performance.now() - start);
+    }
+
+    // ---- ML-KEM keygen ----
+    onProgress('ML-KEM-768 keygen...');
+    const kemKeygenMs = timeIt(iterations, () => ml_kem768.keygen());
+    const kem = ml_kem768.keygen();
+
+    const rsaPem = forge.pki.publicKeyToPem(rsa.publicKey);
+    const kemPkB64 = toBase64(kem.publicKey);
+    const fek = randomBytes(32);
+    const fileId = bytesToHex(randomBytes(16));
+    const deviceId = bytesToHex(randomBytes(8));
+
+    // ---- wrap / unwrap ----
+    onProgress('RSA-OAEP wrap/unwrap...');
+    const rsaWrap = wrapFekRSA(rsaPem, fek);
+    const rsaWrapMs = timeIt(iterations, () => wrapFekRSA(rsaPem, fek));
+    const rsaUnwrapMs = timeIt(iterations, () => unwrapFekRSA(rsa.privateKey, rsaWrap));
+
+    onProgress('ML-KEM-768 wrap/unwrap...');
+    const kemWrap = wrapFekMLKEM(kemPkB64, fek, fileId, deviceId);
+    const kemWrapMs = timeIt(iterations, () => wrapFekMLKEM(kemPkB64, fek, fileId, deviceId));
+    const kemUnwrapMs = timeIt(iterations, () => unwrapFekMLKEM(kem.secretKey, kemWrap, fileId, deviceId));
+
+    // Sanity: both wraps must actually recover the FEK.
+    const rsaOk = unwrapFekRSA(rsa.privateKey, rsaWrap).every((b, i) => b === fek[i]);
+    const kemOk = unwrapFekMLKEM(kem.secretKey, kemWrap, fileId, deviceId).every((b, i) => b === fek[i]);
+    if (!rsaOk || !kemOk) throw new Error('Benchmark self-check failed: unwrap did not recover the FEK.');
+
+    // ---- sizes (bytes) ----
+    const rsaPublicDer = forge.asn1.toDer(forge.pki.publicKeyToAsn1(rsa.publicKey)).getBytes().length;
+    const rsaPrivateDer = forge.asn1.toDer(forge.pki.privateKeyToAsn1(rsa.privateKey)).getBytes().length;
+
+    const rsaWrapBytes = binaryToBytes(forge.util.decode64(rsaWrap.ct)).length;
+    const kemWrapBytes =
+        fromBase64(kemWrap.kem_ct).length +
+        fromBase64(kemWrap.wnonce).length +
+        fromBase64(kemWrap.wrapped).length;
+
+    // What the server stores for 2 devices and 1 file: each device's public
+    // keys as stored (PEM / base64 text) plus each device's wrap JSON.
+    const rsaServer2 = 2 * (utf8Length(rsaPem) + utf8Length(JSON.stringify(rsaWrap)));
+    const kemServer2 = 2 * (utf8Length(kemPkB64) + utf8Length(JSON.stringify(kemWrap)));
+
+    return {
+        device: typeof navigator !== 'undefined' ? navigator.userAgent : 'node',
+        iterations,
+        rsaKeygenRuns,
+        rsa: {
+            keygenMs: median(rsaKeygenSamples),
+            publicKeyBytes: rsaPublicDer,
+            privateKeyBytes: rsaPrivateDer,
+            wrapBytes: rsaWrapBytes,
+            wrapMs: rsaWrapMs,
+            unwrapMs: rsaUnwrapMs,
+            serverBytes2Devices: rsaServer2,
+        },
+        mlkem: {
+            keygenMs: kemKeygenMs,
+            publicKeyBytes: kem.publicKey.length,
+            privateKeyBytes: kem.secretKey.length,
+            wrapBytes: kemWrapBytes,
+            wrapMs: kemWrapMs,
+            unwrapMs: kemUnwrapMs,
+            serverBytes2Devices: kemServer2,
+        },
     };
 }

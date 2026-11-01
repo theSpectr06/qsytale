@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <meta name="color-scheme" content="dark">
+    <title>Qsytale Quantum Lab</title>
+    <link rel="stylesheet" href="./m3.css?v=ui1">
+    <link rel="stylesheet" href="./lab.css?v=ui3">
+</head>
+<body data-page="lab" data-title="Quantum Lab">
+    <main>
+        <div class="toolbar">
+            <div class="segmented" role="radiogroup" aria-label="RSA modulus N">
+                <label><input type="radio" name="n" value="15" checked><span>N = 15</span></label>
+                <label><input type="radio" name="n" value="21"><span>N = 21</span></label>
+            </div>
+            <button id="run">Run Shor</button>
+        </div>
+
+        <div id="progress" class="progress" hidden></div>
+
+        <div id="result" hidden>
+            <section id="hero" class="hero"></section>
+            <div id="stats" class="stats"></div>
+
+            <section class="card">
+                <h2>Measured outcomes</h2>
+                <div id="histogram" class="chart" role="img" aria-label="Histogram of measured outcomes"></div>
+                <div class="legend"><span class="dot peak"></span>Informative <span class="dot zero"></span>y = 0</div>
+            </section>
+
+            <section class="card">
+                <h2>Toy message 1031</h2>
+                <div id="decrypt"></div>
+            </section>
+
+            <section class="card">
+                <details>
+                    <summary>Details and limits</summary>
+                    <div id="gates" class="chips"></div>
+                    <ul id="notes" class="notes"></ul>
+                    <pre id="circuit"></pre>
+                </details>
+            </section>
+        </div>
+
+        <div id="status" class="status" hidden><div class="label">Status</div><pre id="log"></pre></div>
+    </main>
+
+    <script type="module" src="./nav.js?v=ui1"></script>
+    <script type="module" src="./lab.js?v=ui3"></script>
+</body>
+</html>

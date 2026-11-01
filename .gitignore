@@ -8,3 +8,15 @@ __pycache__/
 data/*
 !data/.gitkeep
 certs/
+/data/
+/data-backup-*/
+*.db
+*.bin
+.env
+*.pem
+*.key
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store

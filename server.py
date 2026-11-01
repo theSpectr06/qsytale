@@ -23,10 +23,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import shor_lab
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-DATA_DIR = BASE_DIR / "data"
+# QSYTALE_DATA_DIR lets tests use a throwaway database; default is unchanged.
+DATA_DIR = Path(os.environ.get("QSYTALE_DATA_DIR", BASE_DIR / "data"))
 DB_PATH = DATA_DIR / "qsytale.db"
 
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -35,7 +38,7 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 # and the HKDF info string before upload) and validated strictly here.
 FILE_ID_RE = re.compile(r"[0-9a-f]{32}")
 
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
     title="Qsytale",
@@ -113,7 +116,7 @@ def startup():
     invite_hash = hashlib.sha256(invite.encode()).hexdigest()
     invite_expires = datetime.now(timezone.utc) + timedelta(minutes=15)
 
-    print(f"\nQsytale enrolment invite (15 min, one use): {invite}\n")
+    print(f"\nQsytale enrolment invite (15 min, one use): {invite}\n", flush=True)
 
 
 # --------------------------------------------------
@@ -155,7 +158,17 @@ async def security_headers(request, call_next):
     response = await call_next(request)
 
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "font-src 'self' data:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'"
+    )
     response.headers["Referrer-Policy"] = "no-referrer"
 
     return response
@@ -247,11 +260,10 @@ def list_devices(device=Depends(authenticate)):
 
 
 @app.get("/api/health")
-def health(device=Depends(authenticate)):
+def health():
     return {
         "status": "ok",
         "app": "Qsytale",
-        "device": device["name"],
     }
 
 
@@ -486,3 +498,44 @@ def get_file_wrap(file_id: str, device=Depends(authenticate)):
         "file_id": file_id,
         "wrap": json.loads(row[0]),
     }
+
+
+# --------------------------------------------------
+# QUANTUM ATTACK LAB (local Qiskit Aer only)
+# --------------------------------------------------
+
+class ShorRequest(BaseModel):
+    N: int = 15
+
+
+_shor_cache = {}
+
+
+@app.post("/api/lab/shor")
+def run_shor_lab(payload: ShorRequest, device=Depends(authenticate)):
+    N = payload.N
+
+    if N not in shor_lab.PARAMS:
+        raise HTTPException(
+            400, f"N must be one of {sorted(shor_lab.PARAMS)}"
+        )
+
+    if N in _shor_cache:
+        return {**_shor_cache[N], "cached": True}
+
+    fallback = DATA_DIR / f"shor_N{N}.json"
+
+    try:
+        result = shor_lab.run_shor(N)
+    except Exception as error:
+        # Demo safety net: serve the last good run if Aer fails.
+        if fallback.is_file():
+            return {**json.loads(fallback.read_text()), "cached": True,
+                    "fallback_reason": str(error)}
+        raise HTTPException(500, f"Shor lab failed: {error}")
+
+    if result["success"]:
+        _shor_cache[N] = result
+        fallback.write_text(json.dumps(result))
+
+    return {**result, "cached": False}
