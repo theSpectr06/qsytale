@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Qsytale Vault</title>
+    <link rel="stylesheet" href="./vault.css">
+</head>
+<body>
+    <main>
+        <h1>Qsytale Vault</h1>
+        <p id="whoami">Loading...</p>
+
+        <section id="unlock-section">
+            <input id="pass" type="password" placeholder="Passphrase" autocomplete="off">
+            <button id="unlock">Unlock this device</button>
+        </section>
+
+        <section id="vault-section" hidden>
+            <h2>Upload</h2>
+            <p class="note">Mode: Classical (RSA-OAEP key wrap + AES-256-GCM)</p>
+            <input id="file" type="file">
+            <button id="upload">Encrypt and upload</button>
+
+            <h2>Files <button id="refresh">Refresh</button></h2>
+            <ul id="files"></ul>
+        </section>
+
+        <pre id="log">Ready.</pre>
+    </main>
+
+    <script type="module" src="./vault.js"></script>
+</body>
+</html>
